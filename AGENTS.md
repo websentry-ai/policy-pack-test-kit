@@ -39,7 +39,8 @@ Run the kit. Don't run the test commands yourself.
 | Status | Meaning | Next step |
 |---|---|---|
 | `PASS` | Blocked or audited by the expected policy | None |
-| `WRONG_ACTION` | The policy matched, but the command wasn't blocked | Ask the person to set the rule to Block |
+| `WRONG_ACTION` | A Block test wasn't blocked, or an Audit test was | Ask the person to check the rule's action |
 | `MISS` | Unbound saw the command but matched other policies | Report to Unbound |
 | `RAN_NOT_RECORDED` | The command ran, but no Analytics row arrived | Run `./verify.sh` again in a few minutes, then report |
 | `NOT_RUN` | The test agent didn't run the command | Re-run with `--only` |
+| `NOT_TESTED` | The test was skipped (e.g. `/etc/example` exists) | Tell the person |

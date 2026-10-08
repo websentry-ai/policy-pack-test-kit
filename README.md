@@ -10,17 +10,19 @@ The infra CLIs the tests call (`aws`, `gcloud`, `az`, `kubectl`, `helm`, `terraf
 `psql`, `vault`, `gh`, `ssh`, `sudo`) are stubs that log their arguments and exit 0, and `curl` is
 faked for the test host only. The other commands (`git`, `sed`, `rm`, `kill`, `env`, `cat`) are real
 but harmless here: pushes go to a local folder, and the `/etc` tests are blocked or fail without root.
-The agent gets a minimal HOME (its login, the Unbound hook and `~/.unbound`), a short allowlist of
-environment variables, and no MCP servers. A Block test runs first, and the run stops unless Unbound
-denied it and nothing ran.
+The agent gets a fake HOME with only its login, a copy of its account state without MCP servers or
+projects, the Unbound hooks, and `~/.unbound`. It also gets a short allowlist of environment
+variables, no MCP servers, and test projects in a temp folder, so your CLAUDE.md files don't load.
+A Block test runs first, and the run stops unless Unbound denied it and nothing ran.
 
-This is a test harness, not a security boundary: the agent runs as your user, with network access.
-Use a disposable VM or container. The kit refuses to run as root.
+This is a test harness, not a security boundary. The agent runs as your user, with network access,
+and `~/.unbound` (your Unbound Admin API key) is linked in because the hook needs it. Use a
+disposable VM or container. The kit refuses to run as root.
 
 ## Requirements
 
 - macOS or Linux with `python3` 3.8+ and `git`
-- Claude Code, logged in (Cursor is experimental: `--agent cursor --experimental`)
+- Claude Code, logged in (Cursor isn't supported yet)
 - `unbound-cli` 1.16+ with hooks installed (`unbound-cli login && unbound-cli onboard`),
   as an Admin of the organization you're testing
 - The Policy Packs applied in that organization (Policies → Agentic Use → Policy Packs)
@@ -45,9 +47,11 @@ If an AI agent is running this for you, ask it to follow `AGENTS.md`.
   Without it, careful agents stop to ask before destructive-sounding commands. So the report measures
   policy enforcement, not whether an agent would attempt a command on its own.
 - `report.md` includes agent output. Share it only with Unbound.
-- Using Claude Code through Bedrock or Vertex? Keep the variables it needs:
-  `UNBOUND_TEST_KEEP_ENV=AWS_PROFILE,AWS_REGION ./run.sh ...`
-- The sandbox is in `~/unbound-policy-test-work` (set `UNBOUND_TEST_WORK` to change it). Delete it when you're done.
+- Using Claude Code through Bedrock or Vertex? List the variables it needs in `UNBOUND_TEST_KEEP_ENV`.
+  The agent's HOME is fake, so point credential files at absolute paths, e.g.
+  `AWS_SHARED_CREDENTIALS_FILE=$HOME/.aws/credentials UNBOUND_TEST_KEEP_ENV=AWS_PROFILE,AWS_REGION,AWS_SHARED_CREDENTIALS_FILE ./run.sh ...`
+- The sandbox is in `~/unbound-policy-test-work` (set `UNBOUND_TEST_WORK` to change it), and test
+  projects are in your temp folder. `./setup.sh --force` clears both. Delete them when you're done.
 - The five production-scoped rules (cloud destruction, deployment, kubectl apply, database admin,
   database writes) aren't covered yet.
 - Send `report.md` to your Unbound contact with any questions.
