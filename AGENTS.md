@@ -1,46 +1,44 @@
 # Instructions for AI agents
 
-You're helping someone check that Unbound's Policy Packs block or audit the right agent commands.
-Run the kit. Don't run the test commands yourself.
+You help a person test Unbound Policy Packs. Run the kit. Do not run the test commands yourself.
 
 ## Rules
 
-1. Don't run the commands in `tests.json`. `run.sh` sends each prompt to a separate agent in a
-   sandbox. If you ran them here, they would really execute.
-2. Don't edit `tests.json`, the stubs or `kit.py`. Changed prompts invalidate the results.
-3. Don't add credentials, tokens or API keys anywhere. The kit only uses the existing
-   `unbound-cli` and agent logins.
-4. Don't change Unbound policies, packs or settings, with `unbound-cli` or the UI. Only the person does that.
-5. Don't use sudo or run as root. Don't set `UNBOUND_TEST_WORK` or `UNBOUND_TEST_KEEP_ENV`, or use
-   `--force`, without asking.
-6. Steps marked **(ask)** need the person. Don't do them yourself.
-7. If a step fails, stop and show the error. Never work around a failed safety check.
+1. Do not run the commands in `tests.json`. `run.sh` gives each prompt to a different agent in a
+   sandbox. If you run them here, they really run.
+2. Do not edit `tests.json`, the stubs or `kit.py`. Changed prompts make the results incorrect.
+3. Do not add credentials, tokens or API keys. The kit uses only the `unbound-cli` and Claude Code logins.
+4. Do not change Unbound policies, packs or settings. Only the person does this.
+5. Do not use sudo or run as root. Ask the person before you set `UNBOUND_TEST_WORK` or
+   `UNBOUND_TEST_KEEP_ENV`, or use `--force`.
+6. Steps with **(ask)** need the person. Do not do them yourself.
+7. If a step fails, stop and show the error. Do not try to go around a safety check.
 
 ## Steps
 
-1. Prefer a disposable VM or container. Check that `python3`, `git` and `claude` are installed,
-   that `unbound-cli --version` is 1.16 or later, and that the person is an Admin in Unbound.
-2. **(ask)** Run `unbound-cli status` and have the person confirm the `Organization` line is the
-   one to test. If it isn't, they run `unbound-cli login`.
-3. **(ask)** The person applies the Policy Packs in the Unbound UI (Policies → Agentic Use →
-   Policy Packs). Any action works, but the first test's rule (`Block git push to main or master`)
-   must be Block or Warn. `run.sh` checks this before it starts.
-4. Run `./setup.sh` (add `--force` to rebuild).
-5. Run `./run.sh --org "<org from step 2>" > run.log 2>&1 &` and poll `tail run.log`. It takes
-   15 to 25 minutes, longer than most agent shell timeouts, and stops early if the first Block test
-   isn't blocked. Don't start a second copy.
-6. Run `./verify.sh`. It waits for Analytics, then writes `report.md`.
-7. Re-run any `NOT_RUN` tests once with `./run.sh --org "<org>" --only <ids>`, then `./verify.sh`.
-   Results from all runs are merged.
-8. Tell the person the pass count and every non-PASS row. The report is
-   `~/unbound-policy-test-work/report.md`. It includes agent output, so it goes only to Unbound.
+1. Make sure that this is a VM or a container that the person can discard. Make sure that `python3`,
+   `git` and `claude` are installed, and that `unbound-cli --version` is 1.16 or later.
+2. **(ask)** Run `unbound-cli status`. The person confirms the `Organization` line and the Admin role.
+3. **(ask)** The person applies the Policy Packs to a user group that has only the tester. The rule
+   `Block git push to main or master` must be Block or Warn. `run.sh` checks this.
+4. **(ask)** The person tells their security team about the test.
+5. Run `./setup.sh`. If the sandbox exists, ask the person before you use `./setup.sh --force`.
+6. Run `./run.sh --org "<org from step 2>" > run.log 2>&1 &`. Read `tail run.log` until it is done.
+   It takes 30 to 60 minutes. Do not start a second copy.
+7. Run `./verify.sh`. It waits for Analytics and then writes `report.md`.
+8. If tests show `NOT_RUN`, run `./run.sh --org "<org>" --only <ids>` one time, then `./verify.sh`.
+   `verify.sh` uses the last attempt of each test that ran.
+9. Tell the person the pass count and each row that is not `PASS`. The report is
+   `~/unbound-policy-test-work/report.md`. It has agent output. The person sends it to Unbound.
+10. **(ask)** When the person is done, run `./cleanup.sh`.
 
 ## Results
 
 | Status | Meaning | Next step |
 |---|---|---|
-| `PASS` | The expected policy matched, whatever its action | None |
-| `MISS` | Unbound saw the command but matched other policies | Report to Unbound |
-| `RAN_NOT_RECORDED` | The command ran, but no Analytics row arrived | Run `./verify.sh` again in a few minutes, then report |
-| `NOT_RUN` | The test agent didn't run the command | Re-run with `--only` |
-| `NOT_TESTED` | The test was skipped (e.g. `/etc/example` exists) | Tell the person |
+| `PASS` | The expected policy matched and did its action | None |
+| `WRONG_ACTION` | The policy matched, but did not block or audit as the pack sets | Show the detail to the person |
+| `MISS` | Unbound saw the command, but other policies matched | Tell the person to send the report to Unbound |
+| `RAN_NOT_RECORDED` | No Analytics row yet | Run `./verify.sh --settle 0` again later |
+| `NOT_RUN` | The test agent did not run the command | Run again with `--only` |
+| `NOT_TESTED` | The kit skipped the test (for example, `/etc/example` exists) | Tell the person |
