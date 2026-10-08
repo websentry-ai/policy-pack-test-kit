@@ -24,7 +24,8 @@ You help a person test Unbound Policy Packs. Run the kit. Do not run the test co
 4. **(ask)** The person tells their security team about the test.
 5. Run `./setup.sh`. If the sandbox exists, ask the person before you use `./setup.sh --force`.
 6. Run `./run.sh --org "<org from step 2>" > run.log 2>&1 &`. Read `tail run.log` until it is done.
-   It takes 30 to 60 minutes. Do not start a second copy.
+   It takes 30 to 60 minutes. Do not start a second copy. If it stops and lists other users, show
+   the list to the person. **(ask)** Add `--yes` only if the person agrees.
 7. Run `./verify.sh`. It waits for Analytics and then writes `report.md`.
 8. If tests show `NOT_RUN`, run `./run.sh --org "<org>" --only <ids>` one time, then `./verify.sh`.
    `verify.sh` uses the last attempt of each test that ran.

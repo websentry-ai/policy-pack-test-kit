@@ -164,6 +164,35 @@ def check_pack_rules(tests, canary, uid):
     return actions
 
 
+def confirm_scope(tests, org, email, yes):
+    """Show who else the tested pack rules apply to. Only you: continue. Others: ask (or need --yes)."""
+    names = {t['policy'] for t in tests}
+    policies = cli_json(['policy', 'tool', 'list', '--all'], 'the tool policies').get('policies') or []
+    tested = [p for p in policies if isinstance(p, dict) and p.get('name') in names]
+    groups = {g['id']: g for p in tested for g in p.get('scope_user_groups') or [] if isinstance(g, dict) and 'id' in g}
+    if any(not p.get('scope_user_groups') for p in tested) or any(g.get('all_org_users') for g in groups.values()):
+        where = 'all users in the organization'
+        members = cli_json(['users', 'list'], 'the organization users').get('members') or []
+    else:
+        where = 'user group ' + ', '.join(f'"{g.get("name")}"' for g in groups.values())
+        members = [m for gid in groups for m in
+                   (cli_json(['user-groups', 'get', str(gid)], 'the user group').get('user_group') or {}).get('members') or []]
+    others = sorted({m.get('email') for m in members if isinstance(m, dict) and m.get('email')} - {email},
+                    key=str.lower)
+    print(f'Organization : {org}\nTester       : {email}\nPacks apply  : {where}')
+    if not others:
+        return
+    shown = ', '.join(others[:10]) + (f' and {len(others) - 10} more' if len(others) > 10 else '')
+    print(f'\nThe packs also apply to {len(others)} other users: {shown}.\n'
+          f'Their Block rules stop these commands for them too. The test does not change this.')
+    if yes:
+        return
+    if not sys.stdin.isatty():
+        die('Run again with --yes to continue, or apply the packs to a group that has only you.')
+    if input('Continue? [y/N] ').strip().lower() not in ('y', 'yes'):
+        die('Stopped. Apply the packs to a user group that has only you, then run again.', 0)
+
+
 def run_lock():
     """Held while a run uses the sandbox, so setup --force and cleanup can't delete it underneath."""
     lock = open(WORK / '.run.lock', 'w')
@@ -487,7 +516,7 @@ def cmd_run(a):
     if not org or not email:
         die('unbound-cli is not logged in (no Organization or Email in `unbound-cli status`). '
             'Run `unbound-cli login` first.')
-    if org != a.org:
+    if a.org and org != a.org:
         die(f'unbound-cli is logged in to "{org}", but you asked to test "{a.org}". '
             f'Log in to the right organization, or pass --org "{org}".')
     if not shutil.which('claude'):
@@ -505,6 +534,7 @@ def cmd_run(a):
     if uid is None:
         die(f'Could not find {email} in `unbound-cli users list`.')
     actions = check_pack_rules(tests, canary, uid)
+    confirm_scope(tests, org, email, a.yes)
 
     run_id = now().strftime('%Y%m%dT%H%M%SZ')
     out_dir = RESULTS / run_id
@@ -512,7 +542,7 @@ def cmd_run(a):
     meta = {'run_id': run_id, 'org': org, 'email': email, 'user_id': uid, 'agent': 'claude',
             'kit_version': TESTS['kit_version'], 'rule_actions': actions, 'started': now().isoformat(), 'ended': None}
     (out_dir / 'meta.json').write_text(json.dumps(meta, indent=1))
-    print(f'Organization : {org}\nUser         : {email}\nTests        : {len(tests)}\n')
+    print(f'Tests        : {len(tests)}\n')
 
     smoke_case = CASES / '_smoke'
     smoke_case.mkdir(parents=True, exist_ok=True)
@@ -634,7 +664,7 @@ ADVICE = {
     'MISS': 'Unbound saw the command but did not match the expected policy. Send report.md to your Unbound contact.',
     'RAN_NOT_RECORDED': 'No Analytics row arrived yet. Audit rows can take hours when Unbound is busy. '
                         'Run ./verify.sh --settle 0 again later.',
-    'NOT_RUN': 'The agent chose not to run the command. Re-run just these: ./run.sh --org "<org>" --only <ids>',
+    'NOT_RUN': 'The agent chose not to run the command. Re-run just these: ./run.sh --only <ids>',
 }
 ORDER = ['PASS', 'WRONG_ACTION', 'MISS', 'RAN_NOT_RECORDED', 'NOT_RUN', 'NOT_TESTED']
 
@@ -735,7 +765,8 @@ def main():
     s = sub.add_parser('setup')
     s.add_argument('--force', action='store_true', help='delete and rebuild an existing sandbox')
     r = sub.add_parser('run')
-    r.add_argument('--org', required=True, help='Unbound organization name, exactly as `unbound-cli status` shows it')
+    r.add_argument('--org', help='stop unless unbound-cli is logged in to this organization')
+    r.add_argument('--yes', action='store_true', help='continue when the packs also apply to other users')
     r.add_argument('--only', help='comma-separated test IDs to (re-)run, e.g. DB2,SY2')
     r.add_argument('--timeout', type=int, default=300, help='seconds per test')
     v = sub.add_parser('verify')
