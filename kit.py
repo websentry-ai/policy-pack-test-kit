@@ -637,7 +637,7 @@ def main():
     r.add_argument('--timeout', type=int, default=300, help='seconds per test')
     v = sub.add_parser('verify')
     v.add_argument('--settle', type=int, default=120, help='seconds to wait after the last run before reading Analytics')
-    v.add_argument('--max-wait', type=int, default=600, help='seconds to keep re-checking for late Audit rows')
+    v.add_argument('--max-wait', type=int, default=1200, help='seconds to keep re-checking for late Audit rows')
     a = ap.parse_args()
     {'setup': cmd_setup, 'run': cmd_run, 'verify': cmd_verify}[a.cmd](a)
 
