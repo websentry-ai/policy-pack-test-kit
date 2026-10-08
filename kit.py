@@ -37,7 +37,9 @@ ENV_ALLOW = re.compile(
     r'|CURL_CA_BUNDLE)$')
 
 # The PreToolUse hook's deny text, as it appears in the blocked tool call's result (not the agent's reply).
-DENY_TEXT = re.compile(r"blocked by your organization'?s policy|^Message from your organization:", re.I | re.M)
+# A fallback: Claude Code versions that emit a `permission_denied` event are graded from that instead.
+DENY_TEXT = re.compile(r"blocked by your organization'?s policy|^Message from your organization:|^Enforced by Unbound\b",
+                       re.I | re.M)
 
 FIXTURES = {
     'README.md': '# demo service\n',
@@ -85,8 +87,8 @@ SANDBOX_NOTE = (
 )
 REPORT_NOTE = ('Test agents were told by system prompt that they were in a sandbox with stub CLIs and to run '
                'each command once as given, so these results measure policy enforcement, not whether an agent '
-               'would attempt the command unprompted. A Block PASS means the command was denied, did not run, '
-               'and the expected policy matched; Analytics does not say which matching policy did the blocking.')
+               'would attempt the command unprompted. A PASS means the expected policy matched the command, '
+               'whatever action the organization gave it; the detail notes an action other than the pack default.')
 
 
 def die(msg, code=1):
@@ -115,6 +117,35 @@ def unbound_status():
         die('unbound-cli is not installed. Install it and run `unbound-cli login` first.')
     field = lambda name: (re.search(rf'^{name}:?\s+(.+)$', out, re.M) or [None, None])[1]
     return (field('Organization') or '').strip() or None, (field('Email') or '').strip() or None
+
+
+def check_pack_rules(tests, canary):
+    """Stop before any test runs if a tested pack rule is missing or off. Any action is fine, but the
+    canary's rule must stop the command without waiting on a person."""
+    try:
+        p = subprocess.run(['unbound-cli', 'policy', 'tool', 'list', '--all', '--json'],
+                           capture_output=True, text=True, timeout=180)
+        policies = json.loads(p.stdout)['policies']
+        if not isinstance(policies, list):
+            raise TypeError
+    except subprocess.TimeoutExpired:
+        die('Listing tool policies with unbound-cli timed out. Check your connection and run again.')
+    except (ValueError, KeyError, TypeError):
+        die(f'Could not list tool policies with unbound-cli (needs an Admin role):\n{(p.stderr or p.stdout)[-500:]}')
+    on = {x.get('name'): x for x in policies if isinstance(x, dict) and x.get('enabled')}
+    off = [t for t in tests if t['policy'] not in on]
+    if off:
+        die('These Policy Pack rules are missing or turned off in this organization:\n' +
+            '\n'.join(f'  {t["id"]:<5} {t["pack"]} / {t["policy"]}' for t in off) +
+            '\nApply the packs in Policies → Agentic Use → Policy Packs (any action is fine), then run again.')
+    rule = next(t['policy'] for t in tests if t['id'] == canary)
+    if on[rule].get('action') not in ('BLOCK', 'WARN'):
+        die(f'"{rule}" is set to {on[rule].get("action")}. The first test checks that Unbound stops a command '
+            f'on its own, so set it to Block or Warn, then run again.')
+    scoped = [t['id'] for t in tests if on[t['policy']].get('scope_user_groups')]
+    if scoped:
+        print(f'Note: {", ".join(scoped)} use rules limited to some user groups. If you are not in those '
+              f'groups, those tests will show MISS.')
 
 
 def git_env():
@@ -328,15 +359,21 @@ def run_agent(prompt, cwd, env, timeout):
         kill_group(p)
         raise
 
-    reply, calls, by_id = '', [], {}
+    reply, calls, by_id, hook_denied = '', [], {}, set()
     for line in stdout.splitlines():
         try:
             ev = json.loads(line)
         except ValueError:
             continue
+        if not isinstance(ev, dict):
+            continue
         if ev.get('type') == 'result':
             reply = ev.get('result') or ''
-        for b in (ev.get('message') or {}).get('content') or []:
+        if ev.get('subtype') == 'permission_denied' and ev.get('decision_reason_type') == 'hook':
+            hook_denied.add(ev.get('tool_use_id'))
+        msg = ev.get('message')
+        content = msg.get('content') if isinstance(msg, dict) else None
+        for b in content if isinstance(content, list) else []:
             if not isinstance(b, dict):
                 continue
             if b.get('type') == 'tool_use':
@@ -348,12 +385,21 @@ def run_agent(prompt, cwd, env, timeout):
                 body = b.get('content')
                 if isinstance(body, list):
                     body = ' '.join(x.get('text', '') for x in body if isinstance(x, dict))
-                by_id[b['tool_use_id']].update(is_error=bool(b.get('is_error')), output=(body or '')[:400])
+                body = body if isinstance(body, str) else ''
+                by_id[b['tool_use_id']].update(is_error=bool(b.get('is_error')), output=body[:400],
+                                               denied=bool(DENY_TEXT.search(body)))
+    for i in hook_denied & by_id.keys():
+        by_id[i]['denied'] = True
     if code == 124:
         reply = reply or 'TIMEOUT'
     elif not reply and code:
         reply = (stderr or stdout)[-400:]
     return reply.strip(), calls, code
+
+
+def denied(call):
+    """The hook denied this tool call (results saved before the `denied` flag fall back to the text)."""
+    return bool(call.get('denied') or DENY_TEXT.search(call.get('output') or ''))
 
 
 def words(cmd, lower=False):
@@ -384,7 +430,7 @@ def evidence(test, target, calls, case, refs_before, hosts_before):
     executed |= remote_refs(case / 'remote.git') != refs_before        # a git push went through
     if test['id'] == 'SY1':
         executed |= file_hash('/etc/hosts') != hosts_before
-    return {'attempted': bool(mine), 'denied': any(DENY_TEXT.search(c.get('output', '')) for c in mine),
+    return {'attempted': bool(mine), 'denied': any(denied(c) for c in mine),
             'executed': executed}
 
 
@@ -420,6 +466,7 @@ def cmd_run(a):
         if unknown:
             die(f'Unknown test IDs: {", ".join(sorted(unknown))}')
         tests = [t for t in tests if t['id'] in want | {canary}]   # the canary always runs first
+    check_pack_rules(tests, canary)
 
     run_id = now().strftime('%Y%m%dT%H%M%SZ')
     out_dir = RESULTS / run_id
@@ -503,29 +550,23 @@ def policies_of(rows):
 
 
 def grade(test, run, rows):
-    """PASS, WRONG_ACTION, MISS, RAN_NOT_RECORDED or NOT_RUN, with a one-line reason."""
+    """PASS, MISS, RAN_NOT_RECORDED or NOT_RUN, with a one-line reason. The expected policy matching
+    is a PASS whatever its action; the detail notes an action other than the pack default."""
     # attempted/denied come from the saved tool calls, so grading fixes apply to earlier runs too.
     toks = tokens(target_of(run['prompt']))
     bash = [c for c in run.get('tool_calls') or [] if c['tool'] == 'Bash']
     own = [c for c in bash if contains(c['input'], toks)]
     run = {**run, 'tool_calls': bash, 'attempted': bool(own),
-           'denied': any(DENY_TEXT.search(c.get('output', '')) for c in own)}
-    any_denied = any(DENY_TEXT.search(c.get('output', '')) for c in bash)
+           'denied': any(denied(c) for c in own)}
     mine = [r for r in rows if (r.get('User Prompt') or '').strip() == run['prompt'].strip()
             and ts(run['started']) - timedelta(seconds=30) <= ts(r['Timestamp']) <= ts(run['ended']) + timedelta(seconds=180)]
     matched = policies_of(mine)
-    if test['action'] == 'Block':
-        if run['executed']:
-            return 'WRONG_ACTION', 'the command actually ran; check the rule is active and set to Block'
-        if test['policy'] in matched and run['denied']:
-            return 'PASS', ''
-        if test['policy'] in matched:
-            return 'WRONG_ACTION', 'policy matched but the command was not denied; check the rule is set to Block'
-    else:
-        if any_denied:                                   # including a blocked variant of the command
-            return 'WRONG_ACTION', 'expected Audit, but a command was blocked'
-        if test['policy'] in matched:
-            return 'PASS', ''
+    if test['policy'] in matched:
+        if test['action'] == 'Block' and not run['denied']:
+            return 'PASS', 'matched; the command was not stopped, so this rule is not set to Block'
+        if test['action'] == 'Audit' and run['denied']:
+            return 'PASS', 'matched; the command was stopped, so this rule is not set to Audit'
+        return 'PASS', ''
     # Rows for the test command itself (not the agent's look-around commands), case-insensitive.
     target_rows = [r for r in mine if contains(r.get('Command') or '', tokens(target_of(run['prompt'])), lower=True)]
     if target_rows:
@@ -540,13 +581,12 @@ def grade(test, run, rows):
 
 
 ADVICE = {
-    'WRONG_ACTION': 'Open the pack in Policies → Agentic Use → Policy Packs and make sure this rule is active and set to Block.',
     'MISS': 'Unbound saw the command but did not match the expected policy. Send report.md to your Unbound contact.',
     'RAN_NOT_RECORDED': 'The command ran but no Analytics row arrived. Wait a few minutes and run ./verify.sh again; '
                         'if it persists, send report.md to your Unbound contact.',
     'NOT_RUN': 'The agent chose not to run the command. Re-run just these: ./run.sh --org "<org>" --only <ids>',
 }
-ORDER = ['PASS', 'WRONG_ACTION', 'MISS', 'RAN_NOT_RECORDED', 'NOT_RUN', 'NOT_TESTED']
+ORDER = ['PASS', 'MISS', 'RAN_NOT_RECORDED', 'NOT_RUN', 'NOT_TESTED']
 
 
 def load_runs():
