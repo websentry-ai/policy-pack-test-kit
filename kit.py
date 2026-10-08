@@ -142,7 +142,9 @@ def check_pack_rules(tests, canary):
     if on[rule].get('action') not in ('BLOCK', 'WARN'):
         die(f'"{rule}" is set to {on[rule].get("action")}. The first test checks that Unbound stops a command '
             f'on its own, so set it to Block or Warn, then run again.')
-    scoped = [t['id'] for t in tests if on[t['policy']].get('scope_user_groups')]
+    scoped = [t['id'] for t in tests
+              if any(isinstance(g, dict) and not g.get('all_org_users')
+                     for g in on[t['policy']].get('scope_user_groups') or [])]
     if scoped:
         print(f'Note: {", ".join(scoped)} use rules limited to some user groups. If you are not in those '
               f'groups, those tests will show MISS.')
