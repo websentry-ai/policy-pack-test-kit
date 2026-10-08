@@ -6,18 +6,21 @@ agent and grades each result from your organization's Analytics.
 
 ## Safety
 
-Nothing real runs. The CLIs the tests use (`aws`, `gcloud`, `az`, `kubectl`, `helm`, `terraform`,
-`docker`, `psql`, `vault`, `gh`, `ssh`, `sudo`) are stubs that print their arguments and exit 0,
-and `curl` is faked for the test host only. The agent gets a separate HOME and no cloud, database,
-Vault, GitHub or SSH-agent variables. Each test has its own project with a local git remote.
-A Block test runs first, and the run stops if it isn't blocked.
+The infra CLIs the tests call (`aws`, `gcloud`, `az`, `kubectl`, `helm`, `terraform`, `docker`,
+`psql`, `vault`, `gh`, `ssh`, `sudo`) are stubs that log their arguments and exit 0, and `curl` is
+faked for the test host only. The other commands (`git`, `sed`, `rm`, `kill`, `env`, `cat`) are real
+but harmless here: pushes go to a local folder, and the `/etc` tests are blocked or fail without root.
+The agent gets a minimal HOME (its login, the Unbound hook and `~/.unbound`), a short allowlist of
+environment variables, and no MCP servers. A Block test runs first, and the run stops unless Unbound
+denied it and nothing ran.
 
-A disposable VM or container is still the safest place to run it.
+This is a test harness, not a security boundary: the agent runs as your user, with network access.
+Use a disposable VM or container. The kit refuses to run as root.
 
 ## Requirements
 
 - macOS or Linux with `python3` 3.8+ and `git`
-- Claude Code, logged in (Cursor support is experimental)
+- Claude Code, logged in (Cursor is experimental: `--agent cursor --experimental`)
 - `unbound-cli` 1.16+ with hooks installed (`unbound-cli login && unbound-cli onboard`),
   as an Admin of the organization you're testing
 - The Policy Packs applied in that organization (Policies → Agentic Use → Policy Packs)
@@ -37,9 +40,11 @@ If an AI agent is running this for you, ask it to follow `AGENTS.md`.
 
 ## Notes
 
-- Each test agent is told it's in a sandbox with stub CLIs, and not to retry or work around a block.
-  Without that note, careful agents stop to ask before destructive-sounding commands, and the
-  policy never sees them.
+- Each test agent gets a short system prompt (`SANDBOX_NOTE` in `kit.py`): it's in a sandbox with
+  stub CLIs, it should run each command once as given, and it must not retry or work around a block.
+  Without it, careful agents stop to ask before destructive-sounding commands. So the report measures
+  policy enforcement, not whether an agent would attempt a command on its own.
+- `report.md` includes agent output. Share it only with Unbound.
 - Using Claude Code through Bedrock or Vertex? Keep the variables it needs:
   `UNBOUND_TEST_KEEP_ENV=AWS_PROFILE,AWS_REGION ./run.sh ...`
 - The sandbox is in `~/unbound-policy-test-work` (set `UNBOUND_TEST_WORK` to change it). Delete it when you're done.
