@@ -1,55 +1,59 @@
 # Unbound Policy Packs test kit
 
-Checks that the [Unbound Policy Packs](https://docs.getunbound.ai/playbook/policy-packs-testing-guide)
-block or audit what they should, using a real AI coding agent, and grades the results for you.
+This kit checks that your [Unbound Policy Packs](https://docs.getunbound.ai/playbook/policy-packs-testing-guide)
+block or audit the commands they should. It sends 44 prompts, one per policy, to a real AI coding
+agent and grades each result from your organization's Analytics.
 
-It runs 44 prompts, one per policy, each in a fresh headless agent session, then reads your
-organization's Analytics and writes a pass/fail report.
+## Safety
 
-## Safe by design
+The infra CLIs the tests call (`aws`, `gcloud`, `az`, `kubectl`, `helm`, `terraform`, `docker`,
+`psql`, `vault`, `gh`, `ssh`, `sudo`) are stubs that log their arguments and exit 0, and `curl` is
+faked for the test host only. The other commands (`git`, `sed`, `rm`, `kill`, `env`, `cat`) are real
+but harmless here: pushes go to a local folder, and the `/etc` tests are blocked or fail without root.
+The agent gets a fake HOME with only its login, a copy of its account state without MCP servers or
+projects, the Unbound hooks, and `~/.unbound`. It also gets a short allowlist of environment
+variables, no MCP servers, and test projects in a private temp folder, so your CLAUDE.md files
+don't load.
+A Block test runs first, and the run stops unless Unbound denied it and nothing ran.
 
-- **Nothing real runs.** `aws`, `gcloud`, `az`, `kubectl`, `helm`, `terraform`, `docker`, `psql`,
-  `vault`, `gh`, `ssh` and `sudo` are stubs that print what they were asked to do and exit 0.
-  `curl` is faked only for the test's placeholder host (`export.example.com`).
-- **The agent can't see your credentials.** It runs with a separate HOME (linked only to the
-  agent's and Unbound's own config), and cloud, Kubernetes, database, Vault, GitHub and
-  SSH-agent environment variables are removed.
-- **Each test gets its own throwaway project**, with a local git remote, so git pushes go nowhere.
-- **Fails closed.** A Block test runs first; if it isn't blocked, the run stops before any Audit test.
-
-We still recommend a disposable VM or container.
+This is a test harness, not a security boundary. The agent runs as your user, with network access,
+and `~/.unbound` (your Unbound Admin API key) is linked in because the hook needs it. Use a
+disposable VM or container. The kit refuses to run as root.
 
 ## Requirements
 
-- macOS or Linux with `python3` (3.8+) and `git`
-- Claude Code (`claude`), logged in. Cursor (`cursor-agent`) support is experimental.
-- `unbound-cli` 1.16+, logged in to the organization you want to test, with an Admin role
-  (`npm install -g unbound-cli && unbound-cli login && unbound-cli onboard`)
-- The Policy Packs applied in that organization: **Policies → Agentic Use → Policy Packs**
+- macOS or Linux with `python3` 3.8+ and `git`
+- Claude Code, logged in (Cursor isn't supported yet)
+- `unbound-cli` 1.16+ with hooks installed (`unbound-cli login && unbound-cli onboard`),
+  as an Admin of the organization you're testing
+- The Policy Packs applied in that organization (Policies → Agentic Use → Policy Packs)
 
 ## Run it
 
 ```bash
 git clone https://github.com/websentry-ai/policy-pack-test-kit && cd policy-pack-test-kit
 ./setup.sh
-./run.sh --org "Your Org Name"      # exactly as `unbound-cli status` shows it; ~15–25 min
-./verify.sh                         # writes ~/unbound-policy-test-work/report.md
+./run.sh --org "Your Org Name"   # as shown by `unbound-cli status`; takes 15 to 25 min
+./verify.sh                      # writes ~/unbound-policy-test-work/report.md
 ```
 
-Re-run tests the agent skipped: `./run.sh --org "Your Org Name" --only DB2,SY2` and `./verify.sh` again.
+To re-run tests the agent skipped: `./run.sh --org "Your Org Name" --only DB2,SY2`, then `./verify.sh`.
 
-**Using your own AI agent?** Point it at this folder and say: *"Follow AGENTS.md."*
+If an AI agent is running this for you, ask it to follow `AGENTS.md`.
 
 ## Notes
 
-- Each test agent is told the truth about where it is: a disposable sandbox whose infra CLIs are
-  stubs. Without that, careful agents stop to ask before anything that sounds destructive, and the
-  command never reaches the policy. The note also tells the agent not to retry or work around a block.
-
-- If Claude Code reaches Anthropic through Bedrock or Vertex, pass the variables it needs:
-  `UNBOUND_TEST_KEEP_ENV=AWS_PROFILE,AWS_REGION ./run.sh …`
-- The sandbox lives in `~/unbound-policy-test-work` (override with `UNBOUND_TEST_WORK`).
-  Delete it when you're done.
-- Five production-scoped rules (production cloud destruction, deployment, kubectl apply,
-  database admin and database writes) aren't covered yet.
-- Questions or unexpected results: send `report.md` to your Unbound contact.
+- Each test agent gets a short system prompt (`SANDBOX_NOTE` in `kit.py`): it's in a sandbox with
+  stub CLIs, it should run each command once as given, and it must not retry or work around a block.
+  Without it, careful agents stop to ask before destructive-sounding commands. So the report measures
+  policy enforcement, not whether an agent would attempt a command on its own.
+- `report.md` includes agent output. Share it only with Unbound.
+- Using Claude Code through Bedrock or Vertex? List the variables it needs in `UNBOUND_TEST_KEEP_ENV`.
+  The agent's HOME is fake, so point credential files at absolute paths, e.g.
+  `AWS_SHARED_CREDENTIALS_FILE=$HOME/.aws/credentials UNBOUND_TEST_KEEP_ENV=AWS_PROFILE,AWS_REGION,AWS_SHARED_CREDENTIALS_FILE ./run.sh ...`
+- The sandbox and results are in `~/unbound-policy-test-work` (set `UNBOUND_TEST_WORK` to change it).
+  Each run's test projects go in a private temp folder that's deleted when the run ends. Delete the
+  sandbox when you're done.
+- The five production-scoped rules (cloud destruction, deployment, kubectl apply, database admin,
+  database writes) aren't covered yet.
+- Send `report.md` to your Unbound contact with any questions.
