@@ -179,7 +179,7 @@ def confirm_scope(tests, org, email, yes):
                    (cli_json(['user-groups', 'get', str(gid)], 'the user group').get('user_group') or {}).get('members') or []]
     others = sorted({m.get('email') for m in members if isinstance(m, dict) and m.get('email')} - {email},
                     key=str.lower)
-    print(f'Organization : {org}\nTester       : {email}\nPacks apply  : {where}')
+    print(f'Organization : {org}\nTester       : {email}\nPacks apply  : {where}' + ('' if others else ' (only you)'))
     if not others:
         return
     shown = ', '.join(others[:10]) + (f' and {len(others) - 10} more' if len(others) > 10 else '')
