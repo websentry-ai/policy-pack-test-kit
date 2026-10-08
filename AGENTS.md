@@ -23,7 +23,8 @@ Run the kit. Don't run the test commands yourself.
 2. **(ask)** Run `unbound-cli status` and have the person confirm the `Organization` line is the
    one to test. If it isn't, they run `unbound-cli login`.
 3. **(ask)** The person applies the Policy Packs in the Unbound UI (Policies → Agentic Use →
-   Policy Packs), keeping each pack's default Block/Audit settings.
+   Policy Packs). Any action works, but the first test's rule (`Block git push to main or master`)
+   must be Block or Warn. `run.sh` checks this before it starts.
 4. Run `./setup.sh` (add `--force` to rebuild).
 5. Run `./run.sh --org "<org from step 2>" > run.log 2>&1 &` and poll `tail run.log`. It takes
    15 to 25 minutes, longer than most agent shell timeouts, and stops early if the first Block test
@@ -38,8 +39,7 @@ Run the kit. Don't run the test commands yourself.
 
 | Status | Meaning | Next step |
 |---|---|---|
-| `PASS` | Blocked or audited by the expected policy | None |
-| `WRONG_ACTION` | A Block test wasn't blocked, or an Audit test was | Ask the person to check the rule's action |
+| `PASS` | The expected policy matched, whatever its action | None |
 | `MISS` | Unbound saw the command but matched other policies | Report to Unbound |
 | `RAN_NOT_RECORDED` | The command ran, but no Analytics row arrived | Run `./verify.sh` again in a few minutes, then report |
 | `NOT_RUN` | The test agent didn't run the command | Re-run with `--only` |

@@ -33,9 +33,12 @@ disposable VM or container. The kit refuses to run as root.
 ```bash
 git clone https://github.com/websentry-ai/policy-pack-test-kit && cd policy-pack-test-kit
 ./setup.sh
-./run.sh --org "Your Org Name"   # as shown by `unbound-cli status`; takes 15 to 25 min
-./verify.sh                      # writes ~/unbound-policy-test-work/report.md
+./run.sh --org "Your Org Name"
+./verify.sh
 ```
+
+Use the organization name exactly as `unbound-cli status` shows it. `run.sh` takes 15 to 25 minutes;
+`verify.sh` writes `~/unbound-policy-test-work/report.md`.
 
 To re-run tests the agent skipped: `./run.sh --org "Your Org Name" --only DB2,SY2`, then `./verify.sh`.
 
