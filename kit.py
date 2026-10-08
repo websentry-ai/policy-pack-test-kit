@@ -9,7 +9,7 @@ The infra CLIs the tests call (aws, kubectl, docker, psql, ssh, ...) are stubs t
 were asked to do and exit 0. This is a test harness, not a security boundary: run it in a
 disposable VM or container.
 """
-import argparse, hashlib, json, os, platform, re, shutil, signal, subprocess, sys, tempfile, time
+import argparse, atexit, hashlib, json, os, platform, re, shutil, signal, subprocess, sys, tempfile, time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -18,10 +18,13 @@ TESTS = json.loads((KIT / 'tests.json').read_text())
 WORK = Path(os.environ.get('UNBOUND_TEST_WORK', Path.home() / 'unbound-policy-test-work')).expanduser().resolve()
 STUBS, FAKE_HOME, TEMPLATE, RESULTS = (WORK / d for d in ('stubs', 'home', 'template', 'results'))
 # Test projects live outside HOME: Claude Code loads CLAUDE.md from every parent of its working folder,
-# and with a fake HOME the real ~/.claude/CLAUDE.md would be read as one of those.
-CASES = Path(tempfile.gettempdir(), f'unbound-policy-test-cases-{os.getuid()}').resolve()
+# and with a fake HOME the real ~/.claude/CLAUDE.md would be read as one of those. Each run creates a
+# fresh folder with mkdtemp (random name, mode 0700), preferably under a parent no other user can
+# write to, and deletes it at the end.
+CASES = None
 MARKER_NAME = '.policy-pack-test-kit'
 MARKER = WORK / MARKER_NAME
+MANAGED_MEMORY = [Path('/etc/claude-code/CLAUDE.md'), Path('/Library/Application Support/ClaudeCode/CLAUDE.md')]
 
 # Infra CLIs the tests call. Not ps or lsof (the Unbound hook uses them), and curl is a wrapper (below).
 STUB_BINS = ['aws', 'gcloud', 'az', 'kubectl', 'helm', 'terraform', 'docker', 'psql', 'vault', 'gh', 'ssh', 'sudo']
@@ -131,7 +134,36 @@ def git(args, cwd):
 def memory_files_above(path):
     """CLAUDE.md-style files Claude Code would load for a session started in `path`."""
     names = ('CLAUDE.md', 'CLAUDE.local.md', '.claude/CLAUDE.md', '.claude/rules')
-    return [p / n for p in [path, *path.parents] for n in names if (p / n).exists()]
+    found = [p / n for p in [path, *path.parents] for n in names if (p / n).exists()]
+    return found + [m for m in MANAGED_MEMORY if m.exists()]
+
+
+def check_memory(path):
+    found = memory_files_above(path)
+    if found:
+        die(f'Claude Code would load {found[0]} into every test agent. Move it (or set TMPDIR to a folder '
+            f'with no CLAUDE.md above it), then run ./setup.sh --force.')
+
+
+def trusted(path):
+    """True if no other user can write to path or any of its parents (so nobody can plant a CLAUDE.md)."""
+    try:
+        for p in [path, *path.parents]:
+            st = os.stat(p)
+            if st.st_mode & 0o022 or st.st_uid not in (0, os.getuid()):
+                return False
+    except OSError:
+        return False
+    return True
+
+
+def cases_base():
+    """Where to create a run's test projects: the first candidate no other user can write to."""
+    candidates = [os.environ.get('XDG_RUNTIME_DIR'), tempfile.gettempdir()]
+    for c in filter(None, candidates):
+        if trusted(Path(c).resolve()):
+            return Path(c).resolve(), True
+    return Path(tempfile.gettempdir()).resolve(), False
 
 
 def cmd_setup(a):
@@ -139,23 +171,16 @@ def cmd_setup(a):
     if WORK in (Path.home().resolve(), Path('/')) or WORK == KIT or WORK in KIT.parents:
         die(f'Refusing to use {WORK} as the sandbox folder. Point UNBOUND_TEST_WORK at a folder that '
             f'does not exist yet.')
-    for d in (WORK, CASES):
-        if d.exists():
-            if not (d / MARKER_NAME).exists():
-                die(f'{d} exists and was not created by this kit, so it will not be touched. '
-                    f'Remove it yourself, or point UNBOUND_TEST_WORK somewhere else.')
-            if not a.force:
-                die(f'{d} already exists. Re-run with --force to rebuild it (this deletes earlier results).')
-            shutil.rmtree(d)
+    check_memory(Path(tempfile.gettempdir()))                        # before creating anything
+    if WORK.exists():
+        if not MARKER.exists() and any(WORK.iterdir()):
+            die(f'{WORK} exists and was not created by this kit, so it will not be touched. '
+                f'Remove it yourself, or point UNBOUND_TEST_WORK somewhere else.')
+        if MARKER.exists() and not a.force:
+            die(f'{WORK} already exists. Re-run with --force to rebuild it (this deletes earlier results).')
+        shutil.rmtree(WORK)
     for d in (STUBS, FAKE_HOME / '.claude' / 'hooks', TEMPLATE, RESULTS):
         d.mkdir(parents=True)
-    CASES.mkdir(mode=0o700)
-    for d in (WORK, CASES):
-        (d / MARKER_NAME).write_text('Created by policy-pack-test-kit. Safe to delete.\n')
-    found = memory_files_above(CASES)
-    if found:
-        die(f'Claude Code would load {found[0]} into every test agent. Move it, or set TMPDIR to a folder '
-            f'with no CLAUDE.md above it, then run ./setup.sh --force.')
 
     for b in STUB_BINS:
         (STUBS / b).write_text(STUB_SRC)
@@ -169,6 +194,8 @@ def cmd_setup(a):
         p = TEMPLATE / rel
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(body)
+
+    MARKER.write_text('Created by policy-pack-test-kit. Safe to delete.\n')   # last: setup completed
 
     print(f'Sandbox ready in {WORK}')
     print(f'  stub CLIs : {", ".join(STUB_BINS)} (+ curl, faked only for export.example.com)')
@@ -363,12 +390,18 @@ def evidence(test, target, calls, case, refs_before, hosts_before):
 
 def cmd_run(a):
     refuse_root()
-    if not MARKER.exists() or not (CASES / MARKER_NAME).exists():
+    global CASES
+    if not MARKER.exists():
         die('No sandbox yet. Run ./setup.sh first.')
-    found = memory_files_above(CASES)
-    if found:
-        die(f'Claude Code would load {found[0]} into every test agent. Move it, or set TMPDIR to a folder '
-            f'with no CLAUDE.md above it, then run ./setup.sh --force.')
+    missing = [b for b in STUB_BINS + ['curl'] if not (STUBS / b).exists()]
+    if missing:
+        die(f'The sandbox is incomplete (no stub for {", ".join(missing)}). Run ./setup.sh --force.')
+    base, safe_base = cases_base()
+    check_memory(base)
+    CASES = Path(tempfile.mkdtemp(prefix='unbound-policy-test-cases-', dir=str(base)))
+    atexit.register(shutil.rmtree, str(CASES), True)                    # also on die() and SIGTERM
+    if not safe_base:
+        print(f'Note: {base} is writable by other users; checking for planted CLAUDE.md files before each test.')
     org, email = unbound_status()
     if not org or not email:
         die('unbound-cli is not logged in (no Organization or Email in `unbound-cli status`). '
@@ -417,6 +450,8 @@ def cmd_run(a):
                 if t['id'] == 'SY2' and Path('/etc/example').exists():
                     print(f'[{n:2d}/{len(ordered)}] SY2   skipped: /etc/example exists on this machine')
                     continue
+                if not safe_base:
+                    check_memory(CASES)
                 case, proj, refs = make_case(t['id'])
                 hosts = file_hash('/etc/hosts')
                 started = now().isoformat()
@@ -471,8 +506,11 @@ def grade(test, run, rows):
     """PASS, WRONG_ACTION, MISS, RAN_NOT_RECORDED or NOT_RUN, with a one-line reason."""
     # attempted/denied come from the saved tool calls, so grading fixes apply to earlier runs too.
     toks = tokens(target_of(run['prompt']))
-    own = [c for c in run['tool_calls'] if c['tool'] == 'Bash' and contains(c['input'], toks)]
-    run = {**run, 'attempted': bool(own), 'denied': any(DENY_TEXT.search(c.get('output', '')) for c in own)}
+    bash = [c for c in run.get('tool_calls') or [] if c['tool'] == 'Bash']
+    own = [c for c in bash if contains(c['input'], toks)]
+    run = {**run, 'tool_calls': bash, 'attempted': bool(own),
+           'denied': any(DENY_TEXT.search(c.get('output', '')) for c in own)}
+    any_denied = any(DENY_TEXT.search(c.get('output', '')) for c in bash)
     mine = [r for r in rows if (r.get('User Prompt') or '').strip() == run['prompt'].strip()
             and ts(run['started']) - timedelta(seconds=30) <= ts(r['Timestamp']) <= ts(run['ended']) + timedelta(seconds=180)]
     matched = policies_of(mine)
@@ -484,8 +522,8 @@ def grade(test, run, rows):
         if test['policy'] in matched:
             return 'WRONG_ACTION', 'policy matched but the command was not denied; check the rule is set to Block'
     else:
-        if run['denied']:
-            return 'WRONG_ACTION', 'expected Audit, but the command was blocked'
+        if any_denied:                                   # including a blocked variant of the command
+            return 'WRONG_ACTION', 'expected Audit, but a command was blocked'
         if test['policy'] in matched:
             return 'PASS', ''
     # Rows for the test command itself (not the agent's look-around commands), case-insensitive.

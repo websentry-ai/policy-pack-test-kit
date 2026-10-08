@@ -12,7 +12,8 @@ faked for the test host only. The other commands (`git`, `sed`, `rm`, `kill`, `e
 but harmless here: pushes go to a local folder, and the `/etc` tests are blocked or fail without root.
 The agent gets a fake HOME with only its login, a copy of its account state without MCP servers or
 projects, the Unbound hooks, and `~/.unbound`. It also gets a short allowlist of environment
-variables, no MCP servers, and test projects in a temp folder, so your CLAUDE.md files don't load.
+variables, no MCP servers, and test projects in a private temp folder, so your CLAUDE.md files
+don't load.
 A Block test runs first, and the run stops unless Unbound denied it and nothing ran.
 
 This is a test harness, not a security boundary. The agent runs as your user, with network access,
@@ -50,8 +51,9 @@ If an AI agent is running this for you, ask it to follow `AGENTS.md`.
 - Using Claude Code through Bedrock or Vertex? List the variables it needs in `UNBOUND_TEST_KEEP_ENV`.
   The agent's HOME is fake, so point credential files at absolute paths, e.g.
   `AWS_SHARED_CREDENTIALS_FILE=$HOME/.aws/credentials UNBOUND_TEST_KEEP_ENV=AWS_PROFILE,AWS_REGION,AWS_SHARED_CREDENTIALS_FILE ./run.sh ...`
-- The sandbox is in `~/unbound-policy-test-work` (set `UNBOUND_TEST_WORK` to change it), and test
-  projects are in your temp folder. `./setup.sh --force` clears both. Delete them when you're done.
+- The sandbox and results are in `~/unbound-policy-test-work` (set `UNBOUND_TEST_WORK` to change it).
+  Each run's test projects go in a private temp folder that's deleted when the run ends. Delete the
+  sandbox when you're done.
 - The five production-scoped rules (cloud destruction, deployment, kubectl apply, database admin,
   database writes) aren't covered yet.
 - Send `report.md` to your Unbound contact with any questions.
