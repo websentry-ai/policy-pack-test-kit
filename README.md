@@ -16,16 +16,17 @@ writes a report. Unbound Security maintains this kit. `websentry-ai` is the GitH
 ## Run the test
 
 ```bash
-git clone --branch v0.3.1 https://github.com/websentry-ai/policy-pack-test-kit
+git clone --branch v0.3.2 https://github.com/websentry-ai/policy-pack-test-kit
 cd policy-pack-test-kit
 ./setup.sh
-./run.sh --org "Your Org Name"
+./run.sh
 ./verify.sh
 ```
 
-Use the organization name that `unbound-cli status` shows. `verify.sh` writes
-`~/unbound-policy-test-work/report.md`. To do a test again, use `./run.sh --org "Your Org Name" --only DB2,SY2`
-and then `./verify.sh`. To let an AI agent do the test, tell it to follow `AGENTS.md`.
+`run.sh` shows your organization and who the packs apply to. If the packs apply to other users too,
+it shows them and asks before it continues. `verify.sh` writes `~/unbound-policy-test-work/report.md`.
+To do a test again, use `./run.sh --only DB2,SY2` and then `./verify.sh`. To let an AI agent do the test,
+tell it to follow `AGENTS.md`.
 
 ## What the kit does
 
