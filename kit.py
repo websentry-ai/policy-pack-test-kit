@@ -330,8 +330,9 @@ def run_agent(prompt, cwd, env, timeout):
 
 
 def words(cmd, lower=False):
+    """Words of a shell command, split on whitespace and shell separators (`a; b`, `a | b`, `(a)`)."""
     s = norm(cmd).lower() if lower else norm(cmd)
-    return [w[2:] if w.startswith('./') else w for w in s.split()]
+    return [w[2:] if w.startswith('./') else w for w in re.split(r'[\s;&|()<>]+', s) if w]
 
 
 def tokens(cmd):
@@ -468,6 +469,10 @@ def policies_of(rows):
 
 def grade(test, run, rows):
     """PASS, WRONG_ACTION, MISS, RAN_NOT_RECORDED or NOT_RUN, with a one-line reason."""
+    # attempted/denied come from the saved tool calls, so grading fixes apply to earlier runs too.
+    toks = tokens(target_of(run['prompt']))
+    own = [c for c in run['tool_calls'] if c['tool'] == 'Bash' and contains(c['input'], toks)]
+    run = {**run, 'attempted': bool(own), 'denied': any(DENY_TEXT.search(c.get('output', '')) for c in own)}
     mine = [r for r in rows if (r.get('User Prompt') or '').strip() == run['prompt'].strip()
             and ts(run['started']) - timedelta(seconds=30) <= ts(r['Timestamp']) <= ts(run['ended']) + timedelta(seconds=180)]
     matched = policies_of(mine)
@@ -541,15 +546,22 @@ def cmd_verify(a):
     if wait > 0:
         print(f'Waiting {int(wait)}s for Audit rows to reach Analytics...', flush=True)
         time.sleep(wait)
-    rows = fetch_analytics(since, until)
-
-    results = []
-    for t in TESTS['tests']:
-        attempts = runs.get(t['id'], [])
-        graded = [grade(t, r, [x for x in rows if x.get('Email') == r['meta']['email']]) for r in attempts]
-        ran = [g for g in graded if g[0] != 'NOT_RUN']
-        status, detail = (ran or graded)[-1] if graded else ('NOT_TESTED', 'not run yet')   # latest real attempt
-        results.append({**t, 'status': status, 'detail': ' '.join(detail.split()), 'attempts': len(attempts)})
+    deadline = now() + timedelta(seconds=a.max_wait)
+    while True:
+        rows = fetch_analytics(since, until)
+        results = []
+        for t in TESTS['tests']:
+            attempts = runs.get(t['id'], [])
+            graded = [grade(t, r, [x for x in rows if x.get('Email') == r['meta']['email']]) for r in attempts]
+            ran = [g for g in graded if g[0] != 'NOT_RUN']
+            status, detail = (ran or graded)[-1] if graded else ('NOT_TESTED', 'not run yet')   # latest real attempt
+            results.append({**t, 'status': status, 'detail': ' '.join(detail.split()), 'attempts': len(attempts)})
+        pending = sum(r['status'] == 'RAN_NOT_RECORDED' for r in results)
+        if not pending or now() >= deadline:
+            break
+        # Audit rows are processed asynchronously and can lag well behind Block rows.
+        print(f'{pending} Audit rows not in Analytics yet; checking again in 60s...', flush=True)
+        time.sleep(60)
 
     meta = metas[-1]
     counts = {s: sum(r['status'] == s for r in results) for s in ORDER}
@@ -586,7 +598,8 @@ def main():
     r.add_argument('--only', help='comma-separated test IDs to (re-)run, e.g. DB2,SY2')
     r.add_argument('--timeout', type=int, default=300, help='seconds per test')
     v = sub.add_parser('verify')
-    v.add_argument('--settle', type=int, default=120, help='seconds to wait after the last run for Audit rows')
+    v.add_argument('--settle', type=int, default=120, help='seconds to wait after the last run before reading Analytics')
+    v.add_argument('--max-wait', type=int, default=600, help='seconds to keep re-checking for late Audit rows')
     a = ap.parse_args()
     {'setup': cmd_setup, 'run': cmd_run, 'verify': cmd_verify}[a.cmd](a)
 
